@@ -1,3 +1,4 @@
 .anchor
 target
 /node_modules
+.idea/
