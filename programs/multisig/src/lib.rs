@@ -38,18 +38,18 @@ pub mod multisig {
         Ok(())
     }
 
-    // Creates a new transaction account, automatically signed by the creator,
+    // Creates a new transaction account
     // which must be one of the owners of the multisig.
     pub fn create_transaction(
         ctx: Context<CreateTransaction>,
-        pid: Vec<Pubkey>,
+        pids: Vec<Pubkey>,
         accs: Vec<Vec<TransactionAccount>>,
-        data: Vec<Vec<u8>>,
+        datas: Vec<Vec<u8>>,
     ) -> Result<()> {
-        if pid.len() != accs.len() || pid.len() != data.len() {
+        if pids.len() != accs.len() || pids.len() != datas.len() {
             return Err(ErrorCode::ParamLength.into());
         }
-        let owner_index = ctx
+        let _ = ctx
             .accounts
             .multisig
             .owners
@@ -59,12 +59,11 @@ pub mod multisig {
 
         let mut signers = Vec::new();
         signers.resize(ctx.accounts.multisig.owners.len(), false);
-        signers[owner_index] = true;
 
         let tx = &mut ctx.accounts.transaction;
-        tx.program_id = pid;
+        tx.program_ids = pids;
         tx.accounts = accs;
-        tx.data = data;
+        tx.datas = datas;
         tx.signers = signers;
         tx.multisig = *ctx.accounts.multisig.to_account_info().key;
         tx.did_execute = false;
@@ -134,6 +133,43 @@ pub mod multisig {
     }
 }
 
+// Sets the owners field on the multisig. The only way this can be invoked
+// is via a recursive call from execute_transaction -> set_owners.
+pub fn set_owners(ctx: Context<Auth>, owners: Vec<Pubkey>) -> Result<()> {
+    let multisig = &mut ctx.accounts.multisig;
+
+    if (owners.len() as u64) < multisig.threshold {
+        multisig.threshold = owners.len() as u64;
+    }
+
+    multisig.owners = owners;
+    Ok(())
+}
+
+// Changes the execution threshold of the multisig. The only way this can be
+// invoked is via a recursive call from execute_transaction ->
+// change_threshold.
+pub fn change_threshold(ctx: Context<Auth>, threshold: u64) -> Result<()> {
+    if threshold > ctx.accounts.multisig.owners.len() as u64 {
+        return Err(ErrorCode::InvalidThreshold.into());
+    }
+    let multisig = &mut ctx.accounts.multisig;
+    multisig.threshold = threshold;
+    Ok(())
+}
+
+
+#[derive(Accounts)]
+pub struct Auth<'info> {
+    #[account(mut)]
+    multisig: ProgramAccount<'info, Multisig>,
+    #[account(signer, seeds = [
+        multisig.to_account_info().key.as_ref(),
+        &[multisig.nonce],
+    ])]
+    multisig_signer: AccountInfo<'info>,
+}
+
 #[derive(Accounts)]
 pub struct CreateMultisig<'info> {
     #[account(init)]
@@ -179,11 +215,11 @@ pub struct Transaction {
     // The multisig account this transaction belongs to.
     multisig: Pubkey,
     // Target program to execute against.
-    program_id: Vec<Pubkey>,
+    program_ids: Vec<Pubkey>,
     // Accounts requried for the transaction.
     accounts: Vec<Vec<TransactionAccount>>,
-    // Instruction data for the transaction.
-    data: Vec<Vec<u8>>,
+    // Instruction datas for the transaction.
+    datas: Vec<Vec<u8>>,
     // signers[index] is true iff multisig.owners[index] signed the transaction.
     signers: Vec<bool>,
     // Boolean ensuring one time execution.
@@ -193,11 +229,11 @@ pub struct Transaction {
 impl From<&Transaction> for Vec<Instruction> {
     fn from(tx: &Transaction) -> Vec<Instruction> {
         let mut instructions: Vec<Instruction> = Vec::new();
-        for (i, _pid) in tx.program_id.iter().enumerate() {
+        for (i, _pid) in tx.program_ids.iter().enumerate() {
             instructions.push(Instruction {
-                program_id: tx.program_id[i],
+                program_id: tx.program_ids[i],
                 accounts: tx.accounts[i].clone().into_iter().map(Into::into).collect(),
-                data: tx.data[i].clone(),
+                data: tx.datas[i].clone(),
             })
         }
         instructions
