@@ -1,6 +1,6 @@
 [package]
 name = "multisig"
-version = "0.6.0"
+version = "0.7.0"
 description = "Created with Anchor"
 edition = "2018"
 
@@ -15,4 +15,4 @@ cpi = ["no-entrypoint"]
 default = []
 
 [dependencies]
-anchor-lang = "0.10.0"
+anchor-lang = "0.13.0"

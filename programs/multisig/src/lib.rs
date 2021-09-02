@@ -35,6 +35,7 @@ pub mod multisig {
         multisig.owners = owners;
         multisig.threshold = threshold;
         multisig.nonce = nonce;
+        multisig.owner_set_seqno = 0;
         Ok(())
     }
 
@@ -67,6 +68,7 @@ pub mod multisig {
         tx.signers = signers;
         tx.multisig = *ctx.accounts.multisig.to_account_info().key;
         tx.did_execute = false;
+        tx.owner_set_seqno = ctx.accounts.multisig.owner_set_seqno;
 
         Ok(())
     }
@@ -136,13 +138,18 @@ pub mod multisig {
 // Sets the owners field on the multisig. The only way this can be invoked
 // is via a recursive call from execute_transaction -> set_owners.
 pub fn set_owners(ctx: Context<Auth>, owners: Vec<Pubkey>) -> Result<()> {
-    let multisig = &mut ctx.accounts.multisig;
+    let owners_len = owners.len() as u64;
+    if owners_len == 0 {
+        return Err(ErrorCode::InvalidOwnerLength.into());
+    }
 
-    if (owners.len() as u64) < multisig.threshold {
-        multisig.threshold = owners.len() as u64;
+    let multisig = &mut ctx.accounts.multisig;
+    if owners_len < multisig.threshold {
+        multisig.threshold = owners_len;
     }
 
     multisig.owners = owners;
+    multisig.owner_set_seqno += 1;
     Ok(())
 }
 
@@ -150,6 +157,9 @@ pub fn set_owners(ctx: Context<Auth>, owners: Vec<Pubkey>) -> Result<()> {
 // invoked is via a recursive call from execute_transaction ->
 // change_threshold.
 pub fn change_threshold(ctx: Context<Auth>, threshold: u64) -> Result<()> {
+    if threshold == 0 {
+        return Err(ErrorCode::InvalidThreshold.into());
+    }
     if threshold > ctx.accounts.multisig.owners.len() as u64 {
         return Err(ErrorCode::InvalidThreshold.into());
     }
@@ -157,7 +167,6 @@ pub fn change_threshold(ctx: Context<Auth>, threshold: u64) -> Result<()> {
     multisig.threshold = threshold;
     Ok(())
 }
-
 
 #[derive(Accounts)]
 pub struct Auth<'info> {
@@ -190,13 +199,14 @@ pub struct CreateTransaction<'info> {
 
 #[derive(Accounts)]
 pub struct Approve<'info> {
+    #[account(constraint = multisig.owner_set_seqno == transaction.owner_set_seqno)]
     multisig: ProgramAccount<'info, Multisig>,
     #[account(seeds = [
         multisig.to_account_info().key.as_ref(),
         &[multisig.nonce],
     ])]
     multisig_signer: AccountInfo<'info>,
-    #[account(mut, belongs_to = multisig)]
+    #[account(mut, has_one = multisig)]
     transaction: ProgramAccount<'info, Transaction>,
     // One of the multisig owners. Checked in the handler.
     #[account(signer)]
@@ -205,25 +215,28 @@ pub struct Approve<'info> {
 
 #[account]
 pub struct Multisig {
-    owners: Vec<Pubkey>,
-    threshold: u64,
-    nonce: u8,
+    pub owners: Vec<Pubkey>,
+    pub threshold: u64,
+    pub nonce: u8,
+    pub owner_set_seqno: u32,
 }
 
 #[account]
 pub struct Transaction {
     // The multisig account this transaction belongs to.
-    multisig: Pubkey,
+    pub multisig: Pubkey,
     // Target program to execute against.
-    program_ids: Vec<Pubkey>,
+    pub program_ids: Vec<Pubkey>,
     // Accounts requried for the transaction.
-    accounts: Vec<Vec<TransactionAccount>>,
+    pub accounts: Vec<Vec<TransactionAccount>>,
     // Instruction datas for the transaction.
-    datas: Vec<Vec<u8>>,
-    // signers[index] is true iff multisig.owners[index] signed the transaction.
-    signers: Vec<bool>,
+    pub datas: Vec<Vec<u8>>,
+    // signers[index] is true if multisig.owners[index] signed the transaction.
+    pub signers: Vec<bool>,
     // Boolean ensuring one time execution.
-    did_execute: bool,
+    pub did_execute: bool,
+    // Owner set sequence number.
+    pub owner_set_seqno: u32,
 }
 
 impl From<&Transaction> for Vec<Instruction> {
@@ -232,7 +245,7 @@ impl From<&Transaction> for Vec<Instruction> {
         for (i, _pid) in tx.program_ids.iter().enumerate() {
             instructions.push(Instruction {
                 program_id: tx.program_ids[i],
-                accounts: tx.accounts[i].clone().into_iter().map(Into::into).collect(),
+                accounts: tx.accounts[i].iter().map(AccountMeta::from).collect(),
                 data: tx.datas[i].clone(),
             })
         }
@@ -242,16 +255,26 @@ impl From<&Transaction> for Vec<Instruction> {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct TransactionAccount {
-    pubkey: Pubkey,
-    is_signer: bool,
-    is_writable: bool,
+    pub pubkey: Pubkey,
+    pub is_signer: bool,
+    pub is_writable: bool,
 }
 
-impl From<TransactionAccount> for AccountMeta {
-    fn from(account: TransactionAccount) -> AccountMeta {
+impl From<&TransactionAccount> for AccountMeta {
+    fn from(account: &TransactionAccount) -> AccountMeta {
         match account.is_writable {
             false => AccountMeta::new_readonly(account.pubkey, account.is_signer),
             true => AccountMeta::new(account.pubkey, account.is_signer),
+        }
+    }
+}
+
+impl From<&AccountMeta> for TransactionAccount {
+    fn from(account_meta: &AccountMeta) -> TransactionAccount {
+        TransactionAccount {
+            pubkey: account_meta.pubkey,
+            is_signer: account_meta.is_signer,
+            is_writable: account_meta.is_writable,
         }
     }
 }
@@ -260,6 +283,8 @@ impl From<TransactionAccount> for AccountMeta {
 pub enum ErrorCode {
     #[msg("The given owner is not part of this multisig.")]
     InvalidOwner,
+    #[msg("The given owners is empty.")]
+    InvalidOwnerLength,
     #[msg("Not enough owners signed this transaction.")]
     NotEnoughSigners,
     #[msg("Cannot delete a transaction that has been signed by an owner.")]
