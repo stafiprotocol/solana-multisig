@@ -133,39 +133,39 @@ pub mod multisig {
 
         Ok(())
     }
-}
 
-// Sets the owners field on the multisig. The only way this can be invoked
-// is via a recursive call from execute_transaction -> set_owners.
-pub fn set_owners(ctx: Context<Auth>, owners: Vec<Pubkey>) -> Result<()> {
-    let owners_len = owners.len() as u64;
-    if owners_len == 0 {
-        return Err(ErrorCode::InvalidOwnerLength.into());
+    // Sets the owners field on the multisig. The only way this can be invoked
+    // is via a recursive call from execute_transaction -> set_owners.
+    pub fn set_owners(ctx: Context<Auth>, owners: Vec<Pubkey>) -> Result<()> {
+        let owners_len = owners.len() as u64;
+        if owners_len == 0 {
+            return Err(ErrorCode::InvalidOwnerLength.into());
+        }
+
+        let multisig = &mut ctx.accounts.multisig;
+        if owners_len < multisig.threshold {
+            multisig.threshold = owners_len;
+        }
+
+        multisig.owners = owners;
+        multisig.owner_set_seqno += 1;
+        Ok(())
     }
 
-    let multisig = &mut ctx.accounts.multisig;
-    if owners_len < multisig.threshold {
-        multisig.threshold = owners_len;
+    // Changes the execution threshold of the multisig. The only way this can be
+    // invoked is via a recursive call from execute_transaction ->
+    // change_threshold.
+    pub fn change_threshold(ctx: Context<Auth>, threshold: u64) -> Result<()> {
+        if threshold == 0 {
+            return Err(ErrorCode::InvalidThreshold.into());
+        }
+        if threshold > ctx.accounts.multisig.owners.len() as u64 {
+            return Err(ErrorCode::InvalidThreshold.into());
+        }
+        let multisig = &mut ctx.accounts.multisig;
+        multisig.threshold = threshold;
+        Ok(())
     }
-
-    multisig.owners = owners;
-    multisig.owner_set_seqno += 1;
-    Ok(())
-}
-
-// Changes the execution threshold of the multisig. The only way this can be
-// invoked is via a recursive call from execute_transaction ->
-// change_threshold.
-pub fn change_threshold(ctx: Context<Auth>, threshold: u64) -> Result<()> {
-    if threshold == 0 {
-        return Err(ErrorCode::InvalidThreshold.into());
-    }
-    if threshold > ctx.accounts.multisig.owners.len() as u64 {
-        return Err(ErrorCode::InvalidThreshold.into());
-    }
-    let multisig = &mut ctx.accounts.multisig;
-    multisig.threshold = threshold;
-    Ok(())
 }
 
 #[derive(Accounts)]
